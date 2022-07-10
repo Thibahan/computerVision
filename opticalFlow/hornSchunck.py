@@ -1,13 +1,14 @@
 import numpy as np
 from numpy.typing import NDArray
-from traitlets import Int
+import cv2
 
-from utils import get_gradient, get_mean_flow
+from utils import (get_gradient, get_mean_flow,
+                   get_image_pyramide, warp_flow)
 
 
 def horn_schunck_flow(im1: NDArray, im2: NDArray,
-                      alpha: Int = 1,
-                      n_iter: Int = 100) -> NDArray:
+                      alpha: int = 1,
+                      n_iter: int = 100) -> NDArray:
     """This function will calculate the optilca flow in the Horn-Schunck method.
     Find more informations under: "Determining Optical Flow"
     by Berthold K.P. Horn and Brian G. Schunck
@@ -15,13 +16,13 @@ def horn_schunck_flow(im1: NDArray, im2: NDArray,
     Args:
         im1 (NDArray): Image one.
         im2 (NDArray): Image two.
-        alpha (Int, optional): Parameter to control the weight
+        alpha (int, optional): Parameter to control the weight
         of the smoothness term compared to the optical flow
         constrain. Defaults to 1.
-        n_iter (Int, optional): Number of interations. Defaults to 100.
+        n_iter (int, optional): Number of interations. Defaults to 100.
 
     Returns:
-        NDArray: _description_
+        NDArray: Calculated optical flow.
     """
     # Calculate the image gradients
     fx, fy, ft = get_gradient(im1, im2)
@@ -45,4 +46,62 @@ def horn_schunck_flow(im1: NDArray, im2: NDArray,
     # Create flow array
     flow[:, :, 0] = u
     flow[:, :, 1] = v
+    return flow
+
+
+def horn_schunck_pyr_flow(im1: NDArray, im2: NDArray,
+                          alpha: int = 1, n_iter: int = 100,
+                          kernel: tuple = (5, 5), eta: float = 0.8,
+                          sigma: int = 1, size: int = 5) -> NDArray:
+    """This function will calculate the optilca flow in the pyramidal
+    Horn-Schunck method.
+    Find more informations under: "Determining Optical Flow"
+    by Berthold K.P. Horn and Brian G. Schunck and
+    "Reliable estimation of dense optical flow fields with large displacements"
+    by Luis Alvarez, Joachim Weickert, and Javier Sanchez
+
+    Args:
+        im1 (NDArray): Image one.
+        im2 (NDArray): Image two.
+        alpha (int, optional):  Parameter to control the weight
+        of the smoothness term compared to the optical flow
+        constrain. Defaults to 1.
+        n_iter (int, optional): Number of interations. Defaults to 100.
+        kernel (tuple, optional): Kernel size for the gaussian blur for
+        creating the image pyramide. Defaults to (5, 5).
+        eta (float, optional): Steps for creating the image pyramide.
+        Defaults to 0.8.
+        sigma (int, optional): Kernel standard deviation for image pyramide.
+        Defaults to 1.
+        size (int, optional): Size of image pyramide. Defaults to 5.
+
+    Returns:
+        NDArray: Calculated optical flow.
+    """
+    # calculate image pyramides
+    p_im1 = get_image_pyramide(im1, kernel, eta, sigma, size)
+    p_im2 = get_image_pyramide(im2, kernel, eta, sigma, size)
+    scales_list = list(reversed([x.shape for x in p_im1]))
+    coars_x = scales_list[0][0]
+    coars_y = scales_list[0][1]
+    # Initialze flow with zero
+    flow = np.zeros([coars_x, coars_y, 2])
+    # calculate pyr flow
+    i = 1
+    for (img1, img2) in zip(reversed(p_im1), reversed(p_im2)):
+        # warp second image in next scale
+        img2 = warp_flow(img2, flow)
+        if i != len(scales_list):
+            scale = scales_list[i]
+        i += 1
+        # calculate flow
+        n_flow = horn_schunck_flow(img1, img2, alpha, n_iter)
+        # add flow to init flow
+        flow += n_flow
+        # resize flow to next scale
+        u = cv2.resize(flow[:, :, 0], tuple(reversed(scale)))
+        v = cv2.resize(flow[:, :, 1], tuple(reversed(scale)))
+        flow = np.zeros([scale[0], scale[1], 2])
+        flow[:, :, 0] = u
+        flow[:, :, 1] = v
     return flow
