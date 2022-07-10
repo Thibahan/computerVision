@@ -2,8 +2,8 @@ import numpy as np
 from numpy.typing import NDArray
 import cv2
 
-from utils import (get_gradient, get_mean_flow,
-                   get_image_pyramide, warp_flow)
+from opticalFlow.utils import (get_gradient, get_mean_flow,
+                               get_image_pyramide, warp_flow)
 
 
 def horn_schunck_flow(im1: NDArray, im2: NDArray,
