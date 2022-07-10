@@ -69,3 +69,28 @@ def get_gradient(im1: NDArray,
 
     ft = convolve2d(im1, kernelT, "same") + convolve2d(im2, -kernelT, "same")
     return fx, fy, ft
+
+
+def get_mean_flow(u: NDArray,
+                  v: NDArray,
+                  mean_kernel: NDArray = np.array([
+                      [1 / 12, 1 / 6, 1 / 12],
+                      [1 / 6, 0, 1 / 6],
+                      [1 / 12, 1 / 6, 1 / 12]
+                      ], np.float32)) -> Tuple[NDArray, NDArray]:
+    """Calculates the mean flow of u and v flow.
+
+    Args:
+        u (NDArray): Flow in u direction.
+        v (NDArray): Flow in u direction.
+        mean_kernel (NDArray, optional): Kernel for calculating local mean.
+        Defaults to np.array([ [1 / 12, 1 / 6, 1 / 12],
+                               [1 / 6, 0, 1 / 6],
+                               [1 / 12, 1 / 6, 1 / 12] ], np.float32).
+
+    Returns:
+        Tuple[NDArray, NDArray]: _description_
+    """
+    u_avg = convolve2d(u, mean_kernel, "same")
+    v_avg = convolve2d(v, mean_kernel, "same")
+    return u_avg, v_avg
