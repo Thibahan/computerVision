@@ -94,3 +94,21 @@ def get_mean_flow(u: NDArray,
     u_avg = convolve2d(u, mean_kernel, "same")
     v_avg = convolve2d(v, mean_kernel, "same")
     return u_avg, v_avg
+
+
+def warp_flow(img: NDArray, flow: NDArray) -> NDArray:
+    """Warps the image to the flow.
+
+    Args:
+        img (NDArray): Image.
+        flow (NDArray): Optical flow.
+
+    Returns:
+        NDArray: Warped image.
+    """
+    flow = np.float32(flow)
+    height, width = flow.shape[:2]
+    R2 = np.dstack(np.meshgrid(np.arange(width), np.arange(height)))
+    pixel_map = np.float32(R2 + flow)
+    warped_image = cv2.remap(img, pixel_map, None, cv2.INTER_CUBIC)
+    return warped_image
