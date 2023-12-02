@@ -1,82 +1,162 @@
 import numpy as np
-from scipy import ndimage
+from opticalFlow.math_utils import (
+    grad_x,
+    grad_y,
+    grad_xy,
+    norm_of_gradient,
+    robust_function_derivative,
+    sum_convolution,
+    sum_convolution_neighbours,
+)
 import cv2
 
 
-def grad_x(x):
-    dx = (np.roll(x, 1, axis=1) - np.roll(x, -1, axis=1)) / 2.0
+def brox_optical_flow(
+    flow0,
+    im0,
+    im1,
+    alpha,
+    gamma_d,
+    gamma_g,
+    iterations_fx2,
+    iterations_fx3,
+):
+    # Get shape of image
+    m0, n0 = im0.shape[:2]
+    m, n = im0.shape[:2]
 
-    dx[0, :] = 0.0
-    dx[:, -1] = 0
-    dx[:, 0] = 0
-    dx[-1, :] = 0
+    # Initialize empty flow
+    flow = np.zeros((m0, n0, 2), np.float32)
 
-    return dx
+    zae = 0
+
+    u_k = flow0[:, :, 0]
+    v_k = flow0[:, :, 1]
+
+    du_l = np.zeros((m, n), np.float32)
+    du_m = np.zeros((m, n), np.float32)
+
+    dv_l = np.zeros((m, n), np.float32)
+    dv_m = np.zeros((m, n), np.float32)
+    map_xy = np.indices((m, n), np.float32)
+    map_x = map_xy[1]
+    map_y = map_xy[0]
+
+    im1_s_shift = cv2.remap(
+        np.float32(im1),
+        np.float32(map_x - u_k),
+        np.float32(map_y - v_k),
+        cv2.INTER_CUBIC,
+        cv2.BORDER_CONSTANT,
+        0,
+    )
+
+    im1_s_shift_x = grad_x(im1_s_shift)
+    im1_s_shift_xx = grad_x(im1_s_shift_x)
+    im1_s_shift_y = grad_y(im1_s_shift)
+    im1_s_shift_yy = grad_y(im1_s_shift_y)
+    im1_s_shift_xy = grad_xy(im1_s_shift)
+
+    im0_s_x = grad_x(im0)
+    im0_s_y = grad_y(im0)
+
+    it_s = im1_s_shift - im0
+    ixt_s = im1_s_shift_x - im0_s_x
+    iyt_s = im1_s_shift_y - im0_s_y
+
+    du_l = np.zeros((m, n), np.float32)
+    du_m = np.zeros((m, n), np.float32)
+
+    dv_l = np.zeros((m, n), np.float32)
+    dv_m = np.zeros((m, n), np.float32)
+
+    for _ in range(iterations_fx2):
+        diff_term = robust_function_derivative(
+            norm_of_gradient(u_k + du_l) ** 2 + norm_of_gradient(v_k + dv_l) ** 2,
+            0.001,
+        )
+
+        data_term = gamma_d * robust_function_derivative(
+            (it_s + du_l * im1_s_shift_x + dv_l * im1_s_shift_y) ** 2, 0.001
+        )
+        gradient_term = gamma_g * robust_function_derivative(
+            (ixt_s + du_l * im1_s_shift_xx + dv_l * im1_s_shift_xy) ** 2
+            + (iyt_s + du_l * im1_s_shift_xy + dv_l * im1_s_shift_yy) ** 2,
+            0.001,
+        )
+
+        denominator_u = (
+            data_term * (im1_s_shift_x**2)
+            + gradient_term * (im1_s_shift_xx**2 + im1_s_shift_xy**2)
+            + alpha * sum_convolution_neighbours(diff_term)
+        )
+        denominator_v = (
+            data_term * (im1_s_shift_y**2)
+            + gradient_term * (im1_s_shift_yy**2 + im1_s_shift_xy**2)
+            + alpha * sum_convolution_neighbours(diff_term)
+        )
+        alpha_d_u = alpha / denominator_u
+        alpha_d_v = alpha / denominator_v
+        product_1_u = alpha * sum_convolution_neighbours(diff_term) * u_k
+        product_1_v = alpha * sum_convolution_neighbours(diff_term) * v_k
+
+        for _ in range(iterations_fx3):
+            diff_div_u = diff_term * sum_convolution(u_k + du_m) + sum_convolution(
+                diff_term * (u_k + du_m)
+            )
+            diff_div_v = diff_term * sum_convolution(v_k + dv_m) + sum_convolution(
+                diff_term * (v_k + dv_m)
+            )
+
+            du_m = alpha_d_u * diff_div_u - (
+                data_term * (im1_s_shift_x * (it_s + im1_s_shift_y * dv_m))
+                + gradient_term
+                * (
+                    im1_s_shift_xx * (ixt_s + im1_s_shift_xy * dv_m)
+                    + im1_s_shift_xy * (iyt_s + im1_s_shift_yy * dv_m)
+                )
+                + product_1_u
+            ) / (denominator_u)
+
+            dv_m = alpha_d_v * diff_div_v - (
+                data_term * (im1_s_shift_y * (it_s + im1_s_shift_x * du_m))
+                + gradient_term
+                * (
+                    im1_s_shift_xy * (ixt_s + im1_s_shift_xx * du_m)
+                    + im1_s_shift_yy * (iyt_s + im1_s_shift_xy * du_m)
+                )
+                + product_1_v
+            ) / (denominator_v)
+            zae = zae + 1
+
+        du_l = du_m
+        dv_l = dv_m
+
+        u_k = u_k + du_l
+        v_k = v_k + dv_l
+
+        u_k = cv2.medianBlur(np.float32(u_k), 3)
+        v_k = cv2.medianBlur(np.float32(v_k), 3)
+
+        u_k[0, :] = u_k[1, :]
+        v_k[0, :] = v_k[1, :]
+
+        u_k[m - 1, :] = u_k[m - 2, :]
+        v_k[m - 1, :] = v_k[m - 2, :]
+
+        u_k[:, 0] = u_k[:, 1]
+        v_k[:, 0] = v_k[:, 1]
+
+        u_k[:, n - 1] = u_k[:, n - 2]
+        v_k[:, n - 1] = v_k[:, n - 2]
+
+    flow[:, :, 0] = u_k
+    flow[:, :, 1] = v_k
+
+    return flow
 
 
-def grad_y(x):
-    dy = (np.roll(x, 1, axis=0) - np.roll(x, -1, axis=0)) / 2.0
-    dy[0, :] = 0.0
-    dy[:, -1] = 0
-    dy[:, 0] = 0
-    dy[-1, :] = 0
-
-    return dy
-
-
-def grad_xy(x):
-    dxy = (
-        np.roll(x, (1, 1))
-        - np.roll(x, (1, -1))
-        - np.roll(x, (-1, 1))
-        + np.roll(x, (-1, -1))
-    ) / 4.0
-
-    dxy[0, :] = 0.0
-    dxy[:, -1] = 0
-    dxy[:, 0] = 0
-    dxy[-1, :] = 0
-
-    return dxy
-
-
-def norm_of_gradient(term):
-    term_x = (np.roll(term, 1, axis=1) - np.roll(term, -1, axis=1)) / 2.0
-    term_y = (np.roll(term, 1, axis=0) - np.roll(term, -1, axis=0)) / 2.0
-
-    term_x[0, :] = 0.0
-    term_x[:, -1] = 0
-    term_x[:, 0] = 0
-    term_x[-1, :] = 0
-
-    term_y[0, :] = 0.0
-    term_y[:, -1] = 0
-    term_y[:, 0] = 0
-    term_y[-1, :] = 0
-
-    norm = np.sqrt(term_x**2 + term_y**2)
-    return norm
-
-
-def robust_function_derivative(data_term, epsilon):
-    return 1.0 / (2 * np.sqrt(data_term + epsilon**2))
-
-
-def sum_convolution(im):
-    kernel = np.array([[0.0, 0.5, 0.0], [0.5, 0.0, 0.5], [0.0, 0.5, 0.0]], np.float32)
-    im_sum = cv2.filter2D(im, -1, kernel, cv2.BORDER_REFLECT_101)
-
-    return im_sum
-
-
-def sum_convolution_neighbours(im):
-    kernel = np.array([[0.0, 0.5, 0.0], [0.5, 2.0, 0.5], [0.0, 0.5, 0.0]], np.float32)
-    im_sum = cv2.filter2D(im, -1, kernel, cv2.BORDER_REFLECT_101)
-
-    return im_sum
-
-
-def brox_schunck_pyr_flow(
+def brox_pyr_optical_flow(
     flow0,
     im0,
     im1,
@@ -108,7 +188,7 @@ def brox_schunck_pyr_flow(
     im0_pyr[:m0, :n0] = im0_scaled
 
     m, n = m0, n0
-    m_pyr, n_pyr = m0, n0
+    m_pyr, _ = m0, n0
     pyr_pos[0, :] = np.c_[0, m, n]
 
     for l in range(1, iterations_fx1 + 1):
@@ -151,11 +231,9 @@ def brox_schunck_pyr_flow(
                 nabla**l
             )
 
-            du_k = np.zeros((m, n), np.float32)
             du_l = np.zeros((m, n), np.float32)
             du_m = np.zeros((m, n), np.float32)
 
-            dv_k = np.zeros((m, n), np.float32)
             dv_l = np.zeros((m, n), np.float32)
             dv_m = np.zeros((m, n), np.float32)
 
@@ -164,7 +242,12 @@ def brox_schunck_pyr_flow(
             v_k = cv2.resize(v_k * (1.0 / nabla), (n, m), cv2.INTER_LINEAR)
 
         im1_s_shift = cv2.remap(
-            np.float32(im1_s), np.float32(map_x - u_k), np.float32(map_y - v_k), cv2.INTER_CUBIC, cv2.BORDER_CONSTANT, 0
+            np.float32(im1_s),
+            np.float32(map_x - u_k),
+            np.float32(map_y - v_k),
+            cv2.INTER_CUBIC,
+            cv2.BORDER_CONSTANT,
+            0,
         )
 
         im1_s_shift_x = grad_x(im1_s_shift)
@@ -271,42 +354,3 @@ def brox_schunck_pyr_flow(
     flow[:, :, 1] = v_k
 
     return flow
-
-
-if __name__ == "__main__":
-    from matplotlib import pyplot as plt
-    from draw_utils import mbcolor
-    alpha = 25
-    gamma_d = 3
-    gamma_g = 3
-    sigma = 1.1
-    w_sigma = 5
-    nabla = 0.65
-    iterations_fx1 = 4
-    iterations_fx2 = 30
-    iterations_fx3 = 20
-    verbose = 0
-
-    im1 = np.float32(cv2.imread("/home/thibahan/Dokumente/computervision/opticalFlow/Datasets/middlebury_optical_flow/Army/frame10.png", cv2.IMREAD_GRAYSCALE))
-    im0 = np.float32(cv2.imread("/home/thibahan/Dokumente/computervision/opticalFlow/Datasets/middlebury_optical_flow/Army/frame11.png", cv2.IMREAD_GRAYSCALE))
-
-    flow0 = np.zeros([im0.shape[0], im0.shape[1], 2])
-
-    flow = brox_schunck_pyr_flow(
-        flow0,
-        im0,
-        im1,
-        alpha,
-        gamma_d,
-        gamma_g,
-        sigma,
-        w_sigma,
-        nabla,
-        iterations_fx1,
-        iterations_fx2,
-        iterations_fx3,
-        verbose,
-    )
-
-    plt.imshow(mbcolor(flow))
-    plt.show()
